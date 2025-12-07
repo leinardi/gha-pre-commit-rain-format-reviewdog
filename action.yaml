@@ -1,6 +1,5 @@
-# Replace `<OWNER>/<REPO>` with this action’s repository, and `<TOOL>` / `<HOOK_ID>` with the actual tool and hook name for the concrete action.
-name: "Run <TOOL> via pre-commit + reviewdog"
-description: "Runs <HOOK_ID> pre-commit hook on a diff range and reports via reviewdog"
+name: "Run rain format via pre-commit + reviewdog"
+description: "Runs the rain-format pre-commit hook on a ref range and posts diff suggestions via reviewdog"
 author: "leinardi"
 branding:
   icon: "check-circle"
@@ -19,8 +18,8 @@ inputs:
 
 outputs:
   exitcode:
-    description: "Exit code of the <HOOK_ID> pre-commit hook"
-    value: ${{ steps.run_hook.outputs.exitcode }}
+    description: "Exit code returned by the rain-format pre-commit hook"
+    value: ${{ steps.rain_fmt.outputs.exitcode }}
 
 runs:
   using: "composite"
@@ -42,44 +41,38 @@ runs:
       with:
         reviewdog_version: latest
 
-    # TODO: customize this step for your specific hook and parsing logic
-    - name: Run <HOOK_ID> pre-commit hook
-      id: run_hook
+    - name: Run rain formatter (rain-format hook)
+      id: rain_fmt
       shell: bash
       run: |
         set +e
         set -o pipefail
 
-        # Run the specific pre-commit hook on the diff range
-        pre-commit run <HOOK_ID> \
-          --hook-stage manual \
+        pre-commit run rain-format \
           --from-ref "${{ inputs.from-ref }}" \
-          --to-ref   "${{ inputs.to-ref }}" \
-          --color=never \
-          | tee hook-output.txt
+          --to-ref   "${{ inputs.to-ref }}"
 
-        exitcode=${PIPESTATUS[0]}
-        echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+        rc=$?
+        echo "exitcode=$rc" >> "$GITHUB_OUTPUT"
+
+        # Capture any formatting changes as a diff
+        git diff > rain.diff || true
+
         # Do not fail here; let reviewdog decide
         exit 0
 
-    - name: Report findings via reviewdog
-      if: steps.run_hook.outputs.exitcode != '0'
+    - name: Report rain suggestions via reviewdog
+      if: steps.rain_fmt.outputs.exitcode != '0'
       env:
         REVIEWDOG_GITHUB_API_TOKEN: ${{ inputs.github-token }}
       shell: bash
       run: |
-        # TODO: adapt this part to match your tool's output format and efm
-        # For example, you might need to transform hook-output.txt lines
-        # into reviewdog's %t:%f:%l:%c:%m format.
+        reviewdog \
+          -name="rain" \
+          -f=diff \
+          -f.diff.strip=1 \
+          -reporter=github-pr-review \
+          -filter-mode=nofilter < rain.diff
 
-        cat hook-output.txt \
-          | reviewdog \
-              -efm="%f:%l:%c: %m" \
-              -name="<TOOL>" \
-              -reporter=github-pr-review \
-              -filter-mode=nofilter \
-              -fail-level=info
-
-        # Fail the job if there were violations
+        # Fail the job if there were formatting issues
         exit 1
